@@ -2,11 +2,19 @@ import json
 import re
 import google.generativeai as genai
 from config.settings import GEMINI_MODEL
+import logging
+import os
 
-import json
-import re
-import google.generativeai as genai
-from config.settings import GEMINI_MODEL
+# Setup logging
+log_dir = ".logs"
+os.makedirs(log_dir, exist_ok=True)
+log_path = os.path.join(log_dir, "agents.log")
+logging.basicConfig(
+    filename=log_path,
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 def match_resumes(state):
     def extract_email(text):
@@ -30,23 +38,27 @@ def match_resumes(state):
         response = model.generate_content(prompt).text.strip().upper()
         return response.startswith("YES")
 
-    job = state["job"]
+    logging.info("Starting resume matching process")
+    job = state.get("job", {})
     model = genai.GenerativeModel(GEMINI_MODEL)
-    desc = f"Title: {job['title']}\nResponsibilities: {job['responsibilities']}"
+    desc = f"Title: {job.get('title', '')}\nResponsibilities: {job.get('responsibilities', '')}"
     matches = []
 
-    for r in state["parsed_resumes"]:
-        # Only process if Gemini says it's a resume
-        if not is_resume(r['text'], model):
-            continue
+    for idx, r in enumerate(state.get("parsed_resumes", [])):
+        logging.info(f"Processing resume {idx+1}/{len(state.get('parsed_resumes', []))} (name: {r.get('name', 'N/A')})")
+        try:
+            # Only process if Gemini says it's a resume
+            if not is_resume(r.get('text', ''), model):
+                logging.info(f"Skipped non-resume document (name: {r.get('name', 'N/A')})")
+                continue
 
-        prompt = f"""You are an AI resume screener with a deterministic policy.
+            prompt = f"""You are an AI resume screener with a deterministic policy.
 
 JOB DESCRIPTION
 {desc}
 
 RESUME TEXT
-{r['text']}
+{r.get('text', '')}
 
 SCORING GUIDELINES (0–100):
 - +20 title keywords
@@ -66,12 +78,23 @@ Status rules:
 - Review Manually if 50–69
 - Not Suitable if < 50
 """
-        try:
             raw = model.generate_content(prompt).text.strip()
             data = extract_first_json(raw)
-            email = extract_email(r['text'])  # Extract email from resume text
+            email = extract_email(r.get('text', ''))  # Extract email from resume text
 
-            matches.append({"name": r["name"], "score": data["score"], "status": data["status"], "email": email})
+            matches.append({
+                "name": r.get("name", ""),
+                "score": data.get("score", 0),
+                "status": data.get("status", ""),
+                "email": email
+            })
+            logging.info(f"Resume processed (name: {r.get('name', 'N/A')}, score: {data.get('score', 0)}, status: {data.get('status', '')})")
         except Exception as e:
-            matches.append({"name": r["name"], "score": 0, "status": f"Error: {e}"})
+            logging.error(f"Error processing resume (name: {r.get('name', 'N/A')}): {e}", exc_info=True)
+            matches.append({
+                "name": r.get("name", ""),
+                "score": 0,
+                "status": f"Error: {type(e).__name__}"
+            })
+    logging.info("Resume matching process completed")
     return {"matches": matches}
